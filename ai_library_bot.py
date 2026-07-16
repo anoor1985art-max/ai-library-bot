@@ -344,24 +344,33 @@ if bot:
             status_msg = bot.send_message(chat_id, f"🧠 <b>جاري إعداد تلخيص وتحليل شامل لأفكار كتاب:</b>\n«{book['title']}» ⏳")
             threading.Thread(target=process_book_ai_summary, args=(chat_id, book, status_msg)).start()
 
-        elif data.startswith("regen_img_|"):
-            _, prompt_enc = data.split("|", 1)
-            prompt = urllib.parse.unquote(prompt_enc)
+        elif data.startswith("regen_img_"):
+            media_id = data.split("regen_img_")[1]
+            info = media_cache.get(media_id)
+            if not info:
+                bot.answer_callback_query(call.id, "❌ عذراً، انتهت صلاحية هذا الرابط. يرجى إرسال وصف جديد.")
+                return
+            prompt = info["prompt"]
             bot.answer_callback_query(call.id, "🎨 جاري إعادة توليد الصورة بنمط جديد...")
             status_msg = bot.send_message(chat_id, f"⏳ <b>[1/2] جاري إعادة رسم الصورة وتوليدها بنمط مختلف...</b> 🎨")
             threading.Thread(target=process_ai_image_task, args=(chat_id, prompt, status_msg)).start()
 
-        elif data.startswith("regen_vid_|"):
-            _, prompt_enc = data.split("|", 1)
-            prompt = urllib.parse.unquote(prompt_enc)
+        elif data.startswith("regen_vid_"):
+            media_id = data.split("regen_vid_")[1]
+            info = media_cache.get(media_id)
+            if not info:
+                bot.answer_callback_query(call.id, "❌ عذراً، انتهت صلاحية هذا الرابط. يرجى إرسال وصف جديد.")
+                return
+            prompt = info["prompt"]
             bot.answer_callback_query(call.id, "🎬 جاري إعادة تصميم وإنتاج الفيديو...")
             status_msg = bot.send_message(chat_id, f"🎨 <b>[1/3] جاري رسم وتوليد اللوحات والمشاهد التخيلية...</b> 🖼️")
             threading.Thread(target=process_ai_video_task, args=(chat_id, prompt, status_msg)).start()
 
-        elif data.startswith("dl_vid_doc_|"):
-            _, vid_path_enc = data.split("|", 1)
-            vid_path = urllib.parse.unquote(vid_path_enc)
-            if os.path.exists(vid_path):
+        elif data.startswith("dl_vid_doc_"):
+            media_id = data.split("dl_vid_doc_")[1]
+            info = media_cache.get(media_id)
+            vid_path = info["path"] if info else None
+            if vid_path and os.path.exists(vid_path):
                 bot.answer_callback_query(call.id, "📥 جاري إرسال الفيديو كملف عالي الجودة...")
                 with open(vid_path, 'rb') as f:
                     bot.send_document(chat_id, f, caption="📥 <b>ملف الفيديو بأعلى دقة دون ضغط (HD Document)</b>")
@@ -498,10 +507,11 @@ if bot:
             bot.edit_message_text("🎨 <b>[2/2] جاري رسم الصورة فائقة الدقة (`FLUX 1024x1024`)...</b> ⚡", chat_id=chat_id, message_id=status_msg.message_id)
             img_path, eng_prompt = generate_ai_image(prompt)
             
-            safe_prompt_enc = urllib.parse.quote(prompt)
+            media_id = uuid.uuid4().hex[:8]
+            media_cache[media_id] = {"prompt": prompt, "path": img_path, "type": "image"}
             markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(
-                types.InlineKeyboardButton("🔄 إعادة توليد بنمط مختلف", callback_data=f"regen_img_|{safe_prompt_enc}"),
+                types.InlineKeyboardButton("🔄 إعادة توليد بنمط مختلف", callback_data=f"regen_img_{media_id}"),
                 types.InlineKeyboardButton("🎨 رسم صورة جديدة", callback_data="mode_image")
             )
             markup.add(types.InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="mode_books"))
@@ -533,13 +543,12 @@ if bot:
             out_mp4 = os.path.join(MEDIA_DIR, f"vid_{uuid.uuid4().hex[:8]}.mp4")
             generate_ai_video(prompt, out_mp4, status_callback=update_status)
 
-            safe_prompt_enc = urllib.parse.quote(prompt)
-            safe_path_enc = urllib.parse.quote(out_mp4)
-            
+            media_id = uuid.uuid4().hex[:8]
+            media_cache[media_id] = {"prompt": prompt, "path": out_mp4, "type": "video"}
             markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(
-                types.InlineKeyboardButton("🔄 إخراج مشهد جديد لنفس الوصف", callback_data=f"regen_vid_|{safe_prompt_enc}"),
-                types.InlineKeyboardButton("📥 تحميل كملف مستند HD", callback_data=f"dl_vid_doc_|{safe_path_enc}")
+                types.InlineKeyboardButton("🔄 إخراج مشهد جديد لنفس الوصف", callback_data=f"regen_vid_{media_id}"),
+                types.InlineKeyboardButton("📥 تحميل كملف مستند HD", callback_data=f"dl_vid_doc_{media_id}")
             )
             markup.add(
                 types.InlineKeyboardButton("🎬 تصميم فيديو جديد", callback_data="mode_video"),
