@@ -1,0 +1,5 @@
+pytelegrambotapi
+requests
+flask
+gunicorn
+python-dotenv
