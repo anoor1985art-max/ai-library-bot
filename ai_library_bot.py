@@ -98,15 +98,24 @@ def generate_ai_image(prompt, width=1024, height=1024, seed=None):
     english_prompt = translate_to_english(prompt)
     print(f"[AI Image] Original: {prompt} | English: {english_prompt} | Seed: {seed}")
     safe_prompt = urllib.parse.quote(f"{english_prompt}, masterpiece, highly detailed, photorealistic, 8k resolution, cinematic lighting")
-    url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&model=flux&nologo=true&seed={seed}"
     
-    r = requests.get(url, timeout=45)
-    if r.status_code == 200:
-        filename = os.path.join(MEDIA_DIR, f"img_{uuid.uuid4().hex[:8]}.jpg")
-        with open(filename, "wb") as f:
-            f.write(r.content)
-        return filename, english_prompt
-    raise Exception("تعذر الاتصال بخادم توليد الصور حالياً.")
+    models_to_try = ["flux", "turbo", ""]
+    for model_name in models_to_try:
+        try:
+            model_param = f"&model={model_name}" if model_name else ""
+            url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={seed}{model_param}"
+            print(f"[AI Image] Trying model: '{model_name or 'default'}' -> {url[:80]}...")
+            r = requests.get(url, timeout=35)
+            if r.status_code == 200 and len(r.content) > 1000:
+                filename = os.path.join(MEDIA_DIR, f"img_{uuid.uuid4().hex[:8]}.jpg")
+                with open(filename, "wb") as f:
+                    f.write(r.content)
+                return filename, english_prompt
+        except Exception as e:
+            print(f"[AI Image Fallback] Model '{model_name or 'default'}' failed: {e}")
+            time.sleep(1)
+
+    raise Exception("تعذر الاتصال بخوادم توليد الصور بعد عدة محاولات، يرجى المحاولة بعد لحظات.")
 
 def generate_ai_video(prompt, output_mp4, status_callback=None):
     """
@@ -209,9 +218,11 @@ def search_books_engine(query):
                     cover = cover.replace("http://", "https://")
                 preview_link = vol.get('previewLink') or vol.get('infoLink')
 
-                book_id = item.get('id')
+                original_id = item.get('id')
+                book_id = uuid.uuid4().hex[:8]
                 book_data = {
                     'id': book_id,
+                    'original_id': original_id,
                     'title': title,
                     'authors': authors,
                     'year': year,
@@ -387,8 +398,8 @@ if bot:
         cover = book['cover']
         preview = book['preview']
 
-        safe_title = urllib.parse.quote(f"{title} {authors}")
-        pdf_search_url = f"https://www.google.com/search?q=تحميل+كتاب+{safe_title}+pdf+مجانا"
+        full_query = f"تحميل كتاب {title} {authors} pdf مجانا"
+        pdf_search_url = f"https://www.google.com/search?q={urllib.parse.quote(full_query)}"
 
         caption = (
             f"📕 <b>{title}</b> ({year})\n"
