@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+ai_library_db.json
+generated_media/
