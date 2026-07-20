@@ -6,6 +6,7 @@ import random
 import threading
 import requests
 import urllib.parse
+import base64
 from flask import Flask
 import telebot
 from telebot import types
@@ -208,6 +209,125 @@ def translate_to_english(text):
     except Exception:
         pass
     return text
+
+# ==========================================
+# 2.5. أدوات معالجة وتحويل الملفات (Document & PDF Tools)
+# ==========================================
+import arabic_reshaper
+from bidi.algorithm import get_display
+from PIL import Image
+import pypdf
+import docx
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+FONT_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), "Amiri-Regular.ttf")
+
+def download_arabic_font_if_missing():
+    if not os.path.exists(FONT_PATH):
+        try:
+            url = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf"
+            r = requests.get(url, timeout=20)
+            if r.status_code == 200:
+                with open(FONT_PATH, "wb") as f:
+                    f.write(r.content)
+                print("[Font] Arabic Amiri font downloaded successfully.")
+        except Exception as e:
+            print(f"[Font Download Error]: {e}")
+
+def register_pdf_fonts():
+    download_arabic_font_if_missing()
+    if os.path.exists(FONT_PATH):
+        try:
+            pdfmetrics.registerFont(TTFont('Amiri', FONT_PATH))
+            return True
+        except Exception as e:
+            print(f"[Font Register Error]: {e}")
+    return False
+
+def reshape_arabic_text(text):
+    if not text:
+        return ""
+    has_arabic = any("\u0600" <= c <= "\u06FF" for c in text)
+    if not has_arabic:
+        return text
+    try:
+        reshaped = arabic_reshaper.reshape(text)
+        return get_display(reshaped)
+    except Exception:
+        return text
+
+def convert_docx_to_pdf_local(docx_path, pdf_path):
+    register_pdf_fonts()
+    doc = docx.Document(docx_path)
+    
+    doc_template = SimpleDocTemplate(pdf_path, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    styles = getSampleStyleSheet()
+    
+    font_name = 'Amiri' if os.path.exists(FONT_PATH) else 'Helvetica'
+    
+    arabic_style = ParagraphStyle(
+        name='ArabicBody',
+        fontName=font_name,
+        fontSize=12,
+        leading=16,
+        alignment=2
+    )
+    
+    english_style = ParagraphStyle(
+        name='EnglishBody',
+        fontName='Helvetica',
+        fontSize=12,
+        leading=16,
+        alignment=0
+    )
+    
+    story = []
+    for para in doc.paragraphs:
+        t = para.text.strip()
+        if not t:
+            story.append(Spacer(1, 10))
+            continue
+            
+        has_arabic = any("\u0600" <= c <= "\u06FF" for c in t)
+        if has_arabic:
+            lines = t.split("\n")
+            reshaped_lines = [reshape_arabic_text(line) for line in lines]
+            reshaped_text = "<br/>".join(reshaped_lines)
+            story.append(Paragraph(reshaped_text, arabic_style))
+        else:
+            story.append(Paragraph(t, english_style))
+        story.append(Spacer(1, 8))
+        
+    doc_template.build(story)
+
+def extract_text_from_image_gemini(image_path, gemini_key):
+    with open(image_path, "rb") as f:
+        img_data = base64.b64encode(f.read()).decode("utf-8")
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": "Extract all readable text from this image. Keep the original formatting and layout. Return ONLY the extracted text without any preamble or commentary:"},
+                {
+                    "inline_data": {
+                        "data": img_data,
+                        "mime_type": "image/jpeg"
+                    }
+                }
+            ]
+        }]
+    }
+    r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+    if r.status_code == 200:
+        text = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text")
+        if text:
+            return text.strip()
+    raise Exception("لم يستجب نموذج الذكاء الاصطناعي بشكل صحيح.")
 
 # ==========================================
 # 3. محرك توليد الصور وتحرك الفيديو (AI Image & Video Studio)
@@ -441,13 +561,26 @@ def get_main_menu_markup():
         types.InlineKeyboardButton("🎬 استوديو تصميم الفيديو", callback_data="mode_video")
     )
     markup.add(
-        types.InlineKeyboardButton("🎭 استوديو دمج الوجوه والأصوات", callback_data="mode_faceswap")
+        types.InlineKeyboardButton("🎭 استوديو دمج الوجوه والأصوات", callback_data="mode_faceswap"),
+        types.InlineKeyboardButton("📂 محول ومعالج الملفات (Word/PDF)", callback_data="mode_files")
     )
     markup.add(
         types.InlineKeyboardButton("✍️ تلخيص كتب ومقالات", callback_data="mode_summary"),
         types.InlineKeyboardButton("🌐 مترجم اللغات الذكي", callback_data="mode_translate")
     )
     markup.add(types.InlineKeyboardButton("ℹ️ مساعدة وطريقة الاستخدام", callback_data="mode_help"))
+    return markup
+
+def get_file_tools_markup():
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("📸 تحويل صور إلى PDF واحد", callback_data="file_images_to_pdf"),
+        types.InlineKeyboardButton("📄 تحويل Word (.docx) إلى PDF", callback_data="file_word_to_pdf"),
+        types.InlineKeyboardButton("📝 تحويل PDF إلى Word (.docx)", callback_data="file_pdf_to_word"),
+        types.InlineKeyboardButton("🔍 استخراج نصوص OCR من الصور", callback_data="file_ocr_image"),
+        types.InlineKeyboardButton("📂 دمج ملفات PDF متعددة", callback_data="file_pdf_merge"),
+        types.InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="back_to_start")
+    )
     return markup
 
 if bot:
@@ -465,6 +598,7 @@ if bot:
     @bot.callback_query_handler(func=lambda call: True)
     def handle_all_callbacks(call):
         chat_id = call.message.chat.id
+        msg_id = call.message.message_id
         data = call.data
 
         if data == "mode_faceswap":
@@ -855,6 +989,152 @@ if bot:
             else:
                 bot.answer_callback_query(call.id, "❌ عذراً، الملف لم يعد موجوداً في الذاكرة المؤقتة.")
 
+        elif data == "mode_files":
+            user_states[chat_id] = "menu"
+            msg = (
+                "📂 <b>مستودع تحويل ومعالجة الملفات (PDF / Word):</b>\n\n"
+                "🛠️ اختر الأداة المطلوبة للبدء بمعالجة وتحويل مستنداتك وسحب النصوص منها:"
+            )
+            bot.edit_message_text(msg, chat_id=chat_id, message_id=msg_id, reply_markup=get_file_tools_markup())
+            
+        elif data == "file_images_to_pdf":
+            user_states[chat_id] = {"state": "waiting_pdf_images", "pdf_images": []}
+            msg = (
+                "📸 <b>تحويل صور متعددة إلى ملف PDF واحد</b>\n\n"
+                "📥 يرجى إرسال الصور التي ترغب بجمعها داخل ملف PDF واحد (يرجى إرسالها صورة تلو الأخرى، كصور مباشرة وليس ملفات).\n\n"
+                "👇 اضغط على الزر أدناه عند انتهائك بالكامل من إرسال الصور لبدء الدمج والإنتاج:"
+            )
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(
+                types.InlineKeyboardButton("✅ انتهيت، قم بإنشاء ملف PDF", callback_data="pdf_images_done"),
+                types.InlineKeyboardButton("❌ إلغاء وتراجع", callback_data="mode_files")
+            )
+            bot.edit_message_text(msg, chat_id=chat_id, message_id=msg_id, reply_markup=markup)
+            
+        elif data == "file_word_to_pdf":
+            user_states[chat_id] = "waiting_word_to_pdf"
+            msg = (
+                "📄 <b>تحويل ملف Word (.docx) إلى PDF</b>\n\n"
+                "📥 يرجى إرسال أو توجيه (Forward) ملف الـ Word المطلوب تحويله بصيغة <code>.docx</code> وسأقوم بتحويله وإنتاج ملف PDF منسق فوراً!"
+            )
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ إلغاء وتراجع", callback_data="mode_files"))
+            bot.edit_message_text(msg, chat_id=chat_id, message_id=msg_id, reply_markup=markup)
+            
+        elif data == "file_pdf_to_word":
+            user_states[chat_id] = "waiting_pdf_to_word"
+            msg = (
+                "📝 <b>تحويل ملف PDF إلى Word (.docx)</b>\n\n"
+                "📥 يرجى إرسال أو توجيه (Forward) ملف الـ PDF وسأقوم باستخراج كافة النصوص المكتوبة داخله وتنسيقها لك في ملف Word (.docx) قابل للتعديل بالكامل!"
+            )
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ إلغاء وتراجع", callback_data="mode_files"))
+            bot.edit_message_text(msg, chat_id=chat_id, message_id=msg_id, reply_markup=markup)
+            
+        elif data == "file_ocr_image":
+            user_states[chat_id] = "waiting_ocr_image"
+            msg = (
+                "🔍 <b>استخراج نصوص OCR من الصور بالذكاء الاصطناعي</b>\n\n"
+                "📥 يرجى إرسال صورة تحتوي على نصوص مكتوبة (عربية أو إنجليزية أو بخط اليد)، وسأقوم بقراءتها عبر الذكاء الاصطناعي واستخراج النص لك بدقة 100%!"
+            )
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("❌ إلغاء وتراجع", callback_data="mode_files"))
+            bot.edit_message_text(msg, chat_id=chat_id, message_id=msg_id, reply_markup=markup)
+            
+        elif data == "file_pdf_merge":
+            user_states[chat_id] = {"state": "waiting_pdf_merge", "merge_pdfs": []}
+            msg = (
+                "📂 <b>دمج ملفات PDF متعددة في ملف واحد</b>\n\n"
+                "📥 يرجى إرسال ملفات الـ PDF التي ترغب بدمجها وترتيبها متتالية (ملفاً تلو الآخر).\n\n"
+                "👇 اضغط على الزر أدناه عند انتهائك بالكامل من إرسال الملفات لإنتاج الملف المدمج:"
+            )
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(
+                types.InlineKeyboardButton("✅ انتهيت، ابدأ الدمج الآن", callback_data="pdf_merge_done"),
+                types.InlineKeyboardButton("❌ إلغاء وتراجع", callback_data="mode_files")
+            )
+            bot.edit_message_text(msg, chat_id=chat_id, message_id=msg_id, reply_markup=markup)
+            
+        elif data == "pdf_images_done":
+            state_info = user_states.get(chat_id)
+            if not isinstance(state_info, dict) or state_info.get("state") != "waiting_pdf_images":
+                bot.answer_callback_query(call.id, "❌ لم يتم البدء بوضع دمج الصور بعد.")
+                return
+            img_list = state_info.get("pdf_images", [])
+            if not img_list:
+                bot.answer_callback_query(call.id, "⚠️ يرجى إرسال صورة واحدة على الأقل قبل الضغط على الزر!", show_alert=True)
+                return
+                
+            bot.answer_callback_query(call.id, "⏳ جاري إنشاء ودمج الصور في ملف PDF...")
+            status_msg = bot.send_message(chat_id, "⏳ <b>جاري دمج الصور وتنسيقها داخل ملف PDF واحد...</b>")
+            user_states[chat_id] = "menu"
+            
+            def run_img_merge():
+                try:
+                    open_imgs = []
+                    for path in img_list:
+                        img = Image.open(path)
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        open_imgs.append(img)
+                        
+                    pdf_path = os.path.join(MEDIA_DIR, f"images_merged_{chat_id}_{uuid.uuid4().hex[:6]}.pdf")
+                    open_imgs[0].save(pdf_path, save_all=True, append_images=open_imgs[1:])
+                    
+                    bot.edit_message_text("📤 <b>تم دمج الملف بنجاح! جاري إرسال الـ PDF إليك...</b>", chat_id=chat_id, message_id=status_msg.message_id)
+                    with open(pdf_path, 'rb') as f:
+                        bot.send_document(chat_id, f, caption="📄 <b>تم دمج الصور في ملف PDF بنجاح!</b> ✅")
+                    try:
+                        bot.delete_message(chat_id, status_msg.message_id)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    bot.edit_message_text(f"❌ <b>فشل دمج الملفات:</b>\n<i>{e}</i>", chat_id=chat_id, message_id=status_msg.message_id)
+                finally:
+                    for path in img_list:
+                        try:
+                            os.remove(path)
+                        except Exception:
+                            pass
+            threading.Thread(target=run_img_merge, daemon=True).start()
+            
+        elif data == "pdf_merge_done":
+            state_info = user_states.get(chat_id)
+            if not isinstance(state_info, dict) or state_info.get("state") != "waiting_pdf_merge":
+                bot.answer_callback_query(call.id, "❌ لم يتم البدء بدمج ملفات PDF بعد.")
+                return
+            pdf_list = state_info.get("merge_pdfs", [])
+            if not pdf_list:
+                bot.answer_callback_query(call.id, "⚠️ يرجى إرسال ملفين PDF على الأقل قبل الضغط على الزر!", show_alert=True)
+                return
+                
+            bot.answer_callback_query(call.id, "⏳ جاري دمج ملفات PDF...")
+            status_msg = bot.send_message(chat_id, "⏳ <b>جاري دمج ملفات الـ PDF معاً...</b>")
+            user_states[chat_id] = "menu"
+            
+            def run_pdf_merge():
+                try:
+                    merger = pypdf.PdfMerger()
+                    for path in pdf_list:
+                        merger.append(path)
+                    merged_path = os.path.join(MEDIA_DIR, f"pdfs_merged_{chat_id}_{uuid.uuid4().hex[:6]}.pdf")
+                    merger.write(merged_path)
+                    merger.close()
+                    
+                    bot.edit_message_text("📤 <b>اكتمل الدمج! جاري إرسال الملف الموحد إليك...</b>", chat_id=chat_id, message_id=status_msg.message_id)
+                    with open(merged_path, 'rb') as f:
+                        bot.send_document(chat_id, f, caption="📂 <b>تم دمج ملفات الـ PDF في ملف واحد بنجاح!</b> ✅")
+                    try:
+                        bot.delete_message(chat_id, status_msg.message_id)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    bot.edit_message_text(f"❌ <b>فشل دمج الملفات:</b>\n<i>{e}</i>", chat_id=chat_id, message_id=status_msg.message_id)
+                finally:
+                    for path in pdf_list:
+                        try:
+                            os.remove(path)
+                        except Exception:
+                            pass
+            threading.Thread(target=run_pdf_merge, daemon=True).start()
+
     def send_book_details_card(chat_id, book):
         title = book['title']
         authors = book['authors']
@@ -926,7 +1206,39 @@ if bot:
         chat_id = message.chat.id
         state = user_states.get(chat_id)
         
-        if state == "waiting_face_photo" and message.content_type == "photo":
+        if isinstance(state, dict) and state.get("state") == "waiting_pdf_images" and message.content_type == "photo":
+            try:
+                file_info = bot.get_file(message.photo[-1].file_id)
+                downloaded = bot.download_file(file_info.file_path)
+                local_path = os.path.join(MEDIA_DIR, f"pdf_img_{chat_id}_{uuid.uuid4().hex[:6]}.jpg")
+                with open(local_path, "wb") as f:
+                    f.write(downloaded)
+                state["pdf_images"].append(local_path)
+                bot.reply_to(message, f"📸 تم استلام وحفظ الصورة رقم {len(state['pdf_images'])} بنجاح. أرسل المزيد أو اضغط زر الإنشاء بالأسفل.")
+            except Exception as e:
+                bot.reply_to(message, f"❌ فشل حفظ الصورة: {e}")
+            return
+            
+        elif state == "waiting_ocr_image" and message.content_type == "photo":
+            user_states[chat_id] = "menu"
+            status_msg = bot.reply_to(message, "⏳ <b>جاري قراءة وتفحص الصورة بالذكاء الاصطناعي...</b>")
+            try:
+                file_info = bot.get_file(message.photo[-1].file_id)
+                downloaded = bot.download_file(file_info.file_path)
+                local_path = os.path.join(MEDIA_DIR, f"ocr_{chat_id}_{uuid.uuid4().hex[:6]}.jpg")
+                with open(local_path, "wb") as f:
+                    f.write(downloaded)
+                text_extracted = extract_text_from_image_gemini(local_path, GEMINI_API_KEY)
+                bot.edit_message_text(f"🔍 <b>النص المستخرج بالذكاء الاصطناعي:</b>\n\n<code>{text_extracted}</code>", chat_id=chat_id, message_id=status_msg.message_id)
+                try:
+                    os.remove(local_path)
+                except Exception:
+                    pass
+            except Exception as e:
+                bot.edit_message_text(f"❌ <b>فشل استخراج النص:</b>\n<i>{e}</i>", chat_id=chat_id, message_id=status_msg.message_id)
+            return
+            
+        elif state == "waiting_face_photo" and message.content_type == "photo":
             if not check_rate_limit_and_concurrency(chat_id, is_heavy=True):
                 return
             
@@ -1022,6 +1334,101 @@ if bot:
             finally:
                 user_states[chat_id] = "menu"
                 active_tasks.pop(chat_id, None)
+
+    @bot.message_handler(content_types=['document'])
+    def handle_incoming_documents(message):
+        chat_id = message.chat.id
+        state = user_states.get(chat_id)
+        
+        state_str = state.get("state") if isinstance(state, dict) else state
+        
+        if state_str == "waiting_pdf_merge":
+            if not message.document.file_name.lower().endswith(".pdf"):
+                bot.reply_to(message, "⚠️ يرجى إرسال ملفات PDF فقط للدمج!")
+                return
+            try:
+                file_info = bot.get_file(message.document.file_id)
+                downloaded = bot.download_file(file_info.file_path)
+                local_path = os.path.join(MEDIA_DIR, f"merge_{chat_id}_{uuid.uuid4().hex[:6]}.pdf")
+                with open(local_path, "wb") as f:
+                    f.write(downloaded)
+                state["merge_pdfs"].append(local_path)
+                bot.reply_to(message, f"📄 تم استلام وحفظ ملف PDF رقم {len(state['merge_pdfs'])} بنجاح. أرسل المزيد أو اضغط دمج بالأسفل.")
+            except Exception as e:
+                bot.reply_to(message, f"❌ فشل حفظ الملف: {e}")
+            return
+            
+        elif state_str == "waiting_word_to_pdf":
+            if not message.document.file_name.lower().endswith(".docx"):
+                bot.reply_to(message, "⚠️ يرجى إرسال ملف Word بصيغة (.docx) فقط!")
+                return
+            user_states[chat_id] = "menu"
+            status_msg = bot.reply_to(message, "⏳ <b>جاري تحميل ملف Word وتحويله إلى PDF...</b>")
+            try:
+                file_info = bot.get_file(message.document.file_id)
+                downloaded = bot.download_file(file_info.file_path)
+                docx_path = os.path.join(MEDIA_DIR, f"conv_{chat_id}_{uuid.uuid4().hex[:6]}.docx")
+                pdf_path = docx_path.replace(".docx", ".pdf")
+                with open(docx_path, "wb") as f:
+                    f.write(downloaded)
+                
+                convert_docx_to_pdf_local(docx_path, pdf_path)
+                
+                bot.edit_message_text("📤 <b>تم التحويل بنجاح! جاري إرسال ملف الـ PDF إليك...</b>", chat_id=chat_id, message_id=status_msg.message_id)
+                with open(pdf_path, 'rb') as f:
+                    bot.send_document(chat_id, f, caption="📄 <b>ملف PDF المنسق الناتج عن تحويل Word!</b> ✅")
+                try:
+                    bot.delete_message(chat_id, status_msg.message_id)
+                except Exception:
+                    pass
+                
+                try:
+                    os.remove(docx_path)
+                    os.remove(pdf_path)
+                except Exception:
+                    pass
+            except Exception as e:
+                bot.edit_message_text(f"❌ <b>فشل تحويل الملف:</b>\n<i>{e}</i>", chat_id=chat_id, message_id=status_msg.message_id)
+            return
+            
+        elif state_str == "waiting_pdf_to_word":
+            if not message.document.file_name.lower().endswith(".pdf"):
+                bot.reply_to(message, "⚠️ يرجى إرسال ملف PDF فقط لتحويله إلى Word!")
+                return
+            user_states[chat_id] = "menu"
+            status_msg = bot.reply_to(message, "⏳ <b>جاري تحميل ملف الـ PDF واستخراج النصوص...</b>")
+            try:
+                file_info = bot.get_file(message.document.file_id)
+                downloaded = bot.download_file(file_info.file_path)
+                pdf_path = os.path.join(MEDIA_DIR, f"conv_{chat_id}_{uuid.uuid4().hex[:6]}.pdf")
+                docx_path = pdf_path.replace(".pdf", ".docx")
+                with open(pdf_path, "wb") as f:
+                    f.write(downloaded)
+                
+                reader = pypdf.PdfReader(pdf_path)
+                doc = docx.Document()
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        doc.add_paragraph(text)
+                doc.save(docx_path)
+                
+                bot.edit_message_text("📤 <b>تم استخراج النصوص بنجاح! جاري إرسال ملف Word الجديد...</b>", chat_id=chat_id, message_id=status_msg.message_id)
+                with open(docx_path, 'rb') as f:
+                    bot.send_document(chat_id, f, caption="📄 <b>ملف Word (.docx) المنسق المستخرج من الـ PDF!</b> ✅")
+                try:
+                    bot.delete_message(chat_id, status_msg.message_id)
+                except Exception:
+                    pass
+                
+                try:
+                    os.remove(pdf_path)
+                    os.remove(docx_path)
+                except Exception:
+                    pass
+            except Exception as e:
+                bot.edit_message_text(f"❌ <b>فشل تحويل الملف:</b>\n<i>{e}</i>", chat_id=chat_id, message_id=status_msg.message_id)
+            return
 
     @bot.message_handler(func=lambda message: True)
     def handle_text_messages(message):

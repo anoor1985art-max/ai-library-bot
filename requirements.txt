@@ -7,3 +7,9 @@ Pillow
 numpy
 opencv-python-headless
 imageio[ffmpeg]
+pypdf
+python-docx
+reportlab
+arabic-reshaper
+python-bidi
+
